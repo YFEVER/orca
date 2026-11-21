@@ -511,8 +511,92 @@ async function switchWorkspaces({ page, windowMs }) {
   }
 }
 
+
+const BOTS = 10
+const WORKERS_PER_BOT = 20
+const ROW_WRITES_PER_SECOND = 4
+
+// Setup, not measured: ten bots, each with twenty of the fleet's workspaces nested under its home.
+async function seedBots(page) {
+  const seeded = await page.evaluate(
+    async ({ bots, perBot }) => {
+      const list = await window.api.runtime.call({ method: 'worktree.list', params: { limit: 5000 } })
+      const worktrees = list.result.worktrees
+        .filter((worktree) => /\/wt\/wt-\d{4}$/.test(worktree.path))
+        .sort((a, b) => (a.path < b.path ? -1 : 1))
+      const out = { bots: 0, workers: 0, errors: [] }
+      for (let b = 0; b < bots; b += 1) {
+        const made = await window.api.runtime.call({
+          method: 'bots.create',
+          params: { name: `Perf bot ${String(b + 1)}` }
+        })
+        const bot = made.result?.bot ?? made.result
+        if (!made.ok || !bot?.folderWorkspaceId) {
+          out.errors.push(JSON.stringify(made).slice(0, 200))
+          continue
+        }
+        out.bots += 1
+        for (const worker of worktrees.slice(b * perBot, (b + 1) * perBot)) {
+          const set = await window.api.runtime.call({
+            method: 'worktree.set',
+            params: {
+              worktree: `id:${worker.id}`,
+              parentWorktree: `id:folder:${bot.folderWorkspaceId}`
+            }
+          })
+          if (set.ok) {
+            out.workers += 1
+          } else if (out.errors.length < 5) {
+            out.errors.push(JSON.stringify(set).slice(0, 200))
+          }
+        }
+      }
+      return out
+    },
+    { bots: BOTS, perBot: WORKERS_PER_BOT }
+  )
+  console.log(`[fleet-gate] bots seeded ${JSON.stringify(seeded)}`)
+  await sleep(10_000)
+}
+
+// Worktree-row writes, the event that re-ranks every bot's list, while agents stream statuses.
+async function botRowWrites({ page, userDataDir, windowMs }) {
+  const [streamed, writes] = await Promise.all([
+    streamAgentStatus({ page, userDataDir, windowMs }),
+    page.evaluate(
+      async ({ windowMs: ms, rate }) => {
+        const store = window.__store
+        const ids = Object.values(store.getState().worktreesByRepo)
+          .flat()
+          .map((worktree) => worktree.id)
+          .filter((id) => id !== store.getState().activeWorktreeId)
+          .slice(400, 600)
+        const started = Date.now()
+        let n = 0
+        while (Date.now() < started + ms) {
+          store.getState().bumpWorktreeActivity(ids[n % ids.length])
+          n += 1
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.max(0, started + (n * 1_000) / rate - Date.now()))
+          )
+        }
+        return n
+      },
+      { windowMs, rate: ROW_WRITES_PER_SECOND }
+    )
+  ])
+  const longs = await page.evaluate(() => globalThis.__fleetGateRenderer?.snapshot())
+  const botRows = await page.evaluate(
+    () => [...document.querySelectorAll('*')].filter((el) => el.childElementCount === 0 && /^Perf bot \d+$/.test(el.textContent ?? '')).length
+  )
+  return {
+    ...streamed,
+    note: `${String(writes)} row writes; bot rows shown ${String(botRows)}; long tasks n=${String(longs?.longN)} ms=${String(longs?.longMs)} max=${String(longs?.longMax)}; ${streamed.note ?? ''}`
+  }
+}
+
 // Run by the runner before it resets the probes, so a window never counts its own setup.
-export const SCENARIO_SETUP = { typing: showTerminalWorkspace, switch: dismissOverlays }
+export const SCENARIO_SETUP = { typing: showTerminalWorkspace, switch: dismissOverlays, bots: seedBots }
 
 export const SCENARIOS = {
   idle: async ({ windowMs }) => {
@@ -521,5 +605,6 @@ export const SCENARIOS = {
   },
   typing: typeIntoComposer,
   streaming: streamAgentStatus,
-  switch: switchWorkspaces
+  switch: switchWorkspaces,
+  bots: botRowWrites
 }

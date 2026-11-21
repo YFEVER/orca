@@ -54,7 +54,7 @@ import {
 
 const KEEP_SEEDS = 2
 // Idle agents spread over this many workspaces; the #42104 report had ~500 keyed statuses on ~1,900 workspaces.
-const AGENT_PANES = 200
+const AGENT_PANES = 60
 // Copies and helpers to stop if the gate itself is stopped (a release bot's timeout, Ctrl-C).
 const liveCleanups = new Set()
 let launchesInFlight = 0

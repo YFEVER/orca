@@ -5,8 +5,8 @@ import path from 'node:path'
 import { lockCacheEntry } from './fleet-gate-cache-lock.mjs'
 import { copyProfile } from './fleet-gate-copies.mjs'
 
-export const SEED_SHAPE = { worktrees: 1_800, folders: 100, chats: 1_800, terminals: 200 }
-const SEED_FORMAT = 2
+export const SEED_SHAPE = { worktrees: 1_800, folders: 100, chats: 1_800, terminals: 60 }
+const SEED_FORMAT = 3
 
 function git(cwd, args) {
   execFileSync('git', args, { cwd, stdio: 'ignore' })
